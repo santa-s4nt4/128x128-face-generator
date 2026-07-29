@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+  <meta charset="UTF-8">
+  <title>128x128-face-generator</title>
+  <style>
+    :root {
+      --bg-workspace: #f3f4f6;
+      --bg-sidebar: #ffffff;
+      --accent: #2563eb;
+      --accent-hover: #1d4ed8;
+      --text-main: #1f2937;
+      --text-sub: #6b7280;
+      --border-color: #e5e7eb;
+      --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: var(--font-family);
+      color: var(--text-main);
+      display: flex;
+      height: 100vh;
+      overflow: hidden;
+      background-color: var(--bg-workspace);
+    }
+
+    /* --- Left Workspace (Preview) --- */
+    .workspace {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+    }
+
+    .canvas-container {
+      background: #ffffff;
+      padding: 40px;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+      border-radius: 8px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .canvas-label {
+      font-size: 10px;
+      letter-spacing: 0.1em;
+      color: var(--text-sub);
+      text-transform: uppercase;
+      margin-bottom: 16px;
+    }
+
+    canvas {
+      background: #000000;
+      width: 384px;
+      /* 128pxの3倍表示 */
+      height: 384px;
+      image-rendering: pixelated;
+      border: 1px solid #333;
+    }
+
+    /* --- Right Sidebar (Controls) --- */
+    .sidebar {
+      width: 320px;
+      background: var(--bg-sidebar);
+      border-left: 1px solid var(--border-color);
+      display: flex;
+      flex-direction: column;
+      box-shadow: -4px 0 15px rgba(0, 0, 0, 0.02);
+      z-index: 10;
+    }
+
+    .panel {
+      padding: 24px 20px;
+      overflow-y: auto;
+      flex: 1;
+    }
+
+    .section-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text-main);
+      margin-bottom: 16px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    /* Simple Upload Button */
+    .upload-container {
+      margin-bottom: 32px;
+      text-align: center;
+    }
+
+    input[type="file"] {
+      display: none;
+    }
+
+    .hint-text {
+      font-size: 11px;
+      color: var(--text-sub);
+      margin-top: 8px;
+      display: block;
+    }
+
+    /* Text Input */
+    .input-group {
+      margin-bottom: 24px;
+    }
+
+    .input-group label {
+      display: block;
+      font-size: 12px;
+      color: var(--text-sub);
+      margin-bottom: 8px;
+    }
+
+    .input-group input[type="text"] {
+      width: 100%;
+      padding: 10px;
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      font-family: ui-monospace, SFMono-Regular, monospace;
+      font-size: 13px;
+      color: var(--text-main);
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    .input-group input[type="text"]:focus {
+      border-color: var(--accent);
+    }
+
+    /* Output Area */
+    textarea {
+      width: 100%;
+      height: 240px;
+      padding: 12px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 11px;
+      background: #1f2937;
+      color: #e5e7eb;
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      resize: vertical;
+      margin-bottom: 12px;
+    }
+
+    /* Buttons */
+    .btn {
+      display: inline-block;
+      width: 100%;
+      padding: 10px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      text-align: center;
+      transition: all 0.2s;
+      border: none;
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color: #ffffff;
+    }
+
+    .btn-primary:hover {
+      background: var(--accent-hover);
+    }
+
+    .btn-outline {
+      background: transparent;
+      border: 1px solid var(--accent);
+      color: var(--accent);
+    }
+
+    .btn-outline:hover {
+      background: #eff6ff;
+    }
+  </style>
+</head>
+
+<body>
+
+  <!-- Left Workspace -->
+  <main class="workspace">
+    <div class="canvas-container">
+      <div class="canvas-label">Preview (128x128)</div>
+      <!-- 内部処理用キャンバス(隠し) -->
+      <canvas id="sourceCanvas" width="128" height="128" style="display:none;"></canvas>
+      <!-- 表示用キャンバス -->
+      <canvas id="previewCanvas" width="128" height="128"></canvas>
+    </div>
+  </main>
+
+  <!-- Right Sidebar -->
+  <aside class="sidebar">
+    <div class="panel">
+      <div class="section-title">Image Source (PNG)</div>
+
+      <div class="upload-container">
+        <label class="btn btn-primary" for="fileInput">
+          画像ファイルを選択
+        </label>
+        <input type="file" id="fileInput" accept="image/png, image/jpeg">
+        <span class="hint-text">128x128px推奨 / 白黒画像</span>
+      </div>
+
+      <div class="section-title">Export Settings</div>
+
+      <div class="input-group">
+        <label for="arrayName">配列名 (Array Name)</label>
+        <input type="text" id="arrayName" value="FRAME_IDLE_A" placeholder="例: FRAME_IDLE_A">
+      </div>
+
+      <div class="section-title">C++ Code Output</div>
+      <textarea id="output" readonly placeholder="画像を取り込むとここにC++配列が出力されます..."></textarea>
+
+      <button class="btn btn-outline" id="copyBtn">コードをクリップボードにコピー</button>
+    </div>
+  </aside>
+
+  <script>
+    const fileInput = document.getElementById('fileInput');
+    const sourceCanvas = document.getElementById('sourceCanvas');
+    const previewCanvas = document.getElementById('previewCanvas');
+    const sourceCtx = sourceCanvas.getContext('2d', { willReadFrequently: true });
+    const previewCtx = previewCanvas.getContext('2d');
+    const output = document.getElementById('output');
+    const copyBtn = document.getElementById('copyBtn');
+    const arrayNameInput = document.getElementById('arrayName');
+
+    let currentImg = null;
+
+    // ファイル読み込み処理
+    fileInput.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const img = new Image();
+      img.onload = () => {
+        currentImg = img;
+        processImage();
+      };
+      img.src = URL.createObjectURL(file);
+    });
+
+    // 配列名が変更されたらリアルタイムにコードを再生成する
+    arrayNameInput.addEventListener('input', () => {
+      if (currentImg) {
+        processImage();
+      }
+    });
+
+    // メインの変換処理
+    function processImage() {
+      // 1. ソースをクリアして描画 (リサイズ含む)
+      sourceCtx.clearRect(0, 0, 128, 128);
+      sourceCtx.drawImage(currentImg, 0, 0, 128, 128);
+
+      const threshold = 127; // しきい値は127で固定
+      const imgData = sourceCtx.getImageData(0, 0, 128, 128);
+      const data = imgData.data;
+
+      // プレビュー用の黒背景クリア
+      previewCtx.fillStyle = '#000000';
+      previewCtx.fillRect(0, 0, 128, 128);
+
+      // 入力された配列名を取得（空欄の場合はデフォルト名を設定）
+      const arrayName = arrayNameInput.value.trim() || 'FULL_FACE_IMG';
+
+      let cppCode = `// 128x128 Face Data (1-bit)\n`;
+      cppCode += `const uint8_t ${arrayName}[2048] = {\n`;
+
+      // 2. ピクセル操作 & C++コード生成
+      for (let y = 0; y < 128; y++) {
+        let rowBits = [];
+        for (let x = 0; x < 128; x += 8) {
+          let byte = 0;
+          for (let b = 0; b < 8; b++) {
+            const i = ((y * 128) + (x + b)) * 4;
+            const r = data[i];
+            const g = data[i + 1];
+            const color_b = data[i + 2];
+            const a = data[i + 3];
+
+            // グレースケール化してしきい値判定
+            const brightness = (r + g + color_b) / 3;
+            const isDotOn = (a > 127 && brightness > threshold) ? 1 : 0;
+
+            byte |= (isDotOn << (7 - b));
+
+            // プレビューキャンバスへの描画 (ONなら白を打つ)
+            if (isDotOn) {
+              previewCtx.fillStyle = '#FFFFFF';
+              previewCtx.fillRect(x + b, y, 1, 1);
+            }
+          }
+          rowBits.push(`0x${byte.toString(16).padStart(2, '0')}`);
+        }
+        cppCode += `  ${rowBits.join(', ')},\n`;
+      }
+      cppCode += `};\n`;
+
+      output.value = cppCode;
+    }
+
+    // コピー機能
+    copyBtn.addEventListener('click', () => {
+      output.select();
+      document.execCommand('copy');
+      const originalText = copyBtn.textContent;
+      copyBtn.textContent = 'コピー完了！';
+      setTimeout(() => copyBtn.textContent = originalText, 2000);
+    });
+  </script>
+</body>
+
+</html>
