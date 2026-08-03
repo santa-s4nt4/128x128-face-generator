@@ -60,15 +60,27 @@
     }
 
     canvas {
-      background: #000000;
       width: 384px;
       /* 128pxの3倍表示 */
       height: 384px;
       image-rendering: pixelated;
+    }
+
+    /* トラックパッドでの拡大縮小/パン操作を受け止める表示窓（この枠内だけがクリップされる） */
+    .canvas-viewport {
+      position: relative;
+      width: 384px;
+      height: 384px;
+      overflow: hidden;
+      background: #000000;
       border: 1px solid #333;
     }
 
     #previewCanvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      transform-origin: 0 0;
       cursor: pointer;
     }
 
@@ -224,10 +236,12 @@
   <main class="workspace">
     <div class="canvas-container">
       <div class="canvas-label">Preview (128x128)</div>
-      <!-- 内部処理用キャンバス(隠し) -->
-      <canvas id="sourceCanvas" width="128" height="128" style="display:none;"></canvas>
-      <!-- 表示用キャンバス -->
-      <canvas id="previewCanvas" width="128" height="128"></canvas>
+      <div class="canvas-viewport" id="canvasViewport">
+        <!-- 内部処理用キャンバス(隠し) -->
+        <canvas id="sourceCanvas" width="128" height="128" style="display:none;"></canvas>
+        <!-- 表示用キャンバス -->
+        <canvas id="previewCanvas" width="128" height="128"></canvas>
+      </div>
     </div>
   </main>
 
@@ -241,6 +255,7 @@
           画像ファイルを選択
         </label>
         <input type="file" id="fileInput" accept="image/png, image/jpeg">
+        <span class="hint-text" id="fileName"></span>
         <span class="hint-text">128x128px推奨 / 白黒画像</span>
       </div>
 
@@ -254,6 +269,17 @@
           <option value="2">モザイク強 (2倍: 64x64相当)</option>
           <option value="4">モザイク最強 (4倍: 32x32相当)</option>
           <option value="8">超ローファイ (8倍: 16x16相当)</option>
+        </select>
+      </div>
+
+      <!-- 編集の粒度（クリックで反転するセルの大きさ。レトロフィルターとは独立） -->
+      <div class="input-group">
+        <label for="editGranularity">編集の粒度 (クリックサイズ)</label>
+        <select id="editGranularity">
+          <option value="1">1x1 (最小)</option>
+          <option value="2">2x2</option>
+          <option value="4">4x4</option>
+          <option value="8">8x8</option>
         </select>
       </div>
 
@@ -272,9 +298,11 @@
       </div>
 
       <div class="section-title">C++ Code Output</div>
-      <textarea id="output" readonly placeholder="画像を取り込むとここにC++配列が出力されます..."></textarea>
+      <textarea id="output" placeholder="画像を取り込むとここにC++配列が出力されます..."></textarea>
 
       <button class="btn btn-outline" id="copyBtn">コードをクリップボードにコピー</button>
+      <div style="height: 24px;"></div>
+      <button class="btn btn-outline" id="exportPngBtn">PNG画像としてエクスポート</button>
     </div>
   </aside>
 
@@ -286,13 +314,25 @@
     const previewCtx = previewCanvas.getContext('2d');
     const output = document.getElementById('output');
     const copyBtn = document.getElementById('copyBtn');
+    const exportPngBtn = document.getElementById('exportPngBtn');
+    const fileNameDisplay = document.getElementById('fileName');
     const arrayNameInput = document.getElementById('arrayName');
     const blockSizeInput = document.getElementById('blockSize');
+    const editGranularityInput = document.getElementById('editGranularity');
     const showGridInput = document.getElementById('showGrid');
+    const canvasViewport = document.getElementById('canvasViewport');
 
     let currentImg = null;
     let dotState = null; // 128x128 のドットON/OFF状態（手動編集を保持する）
-    let currentCellSize = parseInt(blockSizeInput.value, 10); // グリッド/クリック判定用のセルサイズ
+    let currentCellSize = parseInt(editGranularityInput.value, 10); // グリッド表示/クリック判定用のセルサイズ（レトロフィルターとは独立）
+
+    // --- トラックパッドによるFigma風の拡大縮小/パン ---
+    let zoomScale = 1;
+    let panX = 0;
+    let panY = 0;
+    const MIN_ZOOM = 1;
+    const MAX_ZOOM = 20;
+    const VIEWPORT_SIZE = 384; // canvas-viewportの表示サイズ(px)と一致させる
 
     // --- クリック編集のUndo/Redo履歴 ---
     let undoStack = [];
@@ -354,6 +394,8 @@
       const file = e.target.files[0];
       if (!file) return;
 
+      fileNameDisplay.textContent = file.name;
+
       const img = new Image();
       img.onload = () => {
         currentImg = img;
@@ -365,8 +407,18 @@
     // 配列名が変更されたら再描画（ドット状態はそのまま）
     arrayNameInput.addEventListener('input', () => { if (dotState) render(); });
 
-    // 粗さが変更されたら画像から再生成（手動編集は破棄される）
-    blockSizeInput.addEventListener('change', () => { if (currentImg) processImage(); });
+    // 粗さ（レトロフィルター）が変更されたら、現在のドット状態（編集済み）にモザイクを再適用する
+    // ※画像から再生成し直すわけではないので、手動編集は保持される
+    blockSizeInput.addEventListener('change', () => {
+      if (!dotState) return;
+      reapplyRetroFilter(parseInt(blockSizeInput.value, 10));
+    });
+
+    // 編集の粒度が変更されたら、グリッド/クリック判定サイズだけを更新する（ドット状態はそのまま）
+    editGranularityInput.addEventListener('change', () => {
+      currentCellSize = parseInt(editGranularityInput.value, 10);
+      if (dotState) render();
+    });
 
     // グリッド表示切り替え時は再描画のみ
     showGridInput.addEventListener('change', () => { if (dotState) render(); });
@@ -398,10 +450,50 @@
       render();
     });
 
-    // 画像からドット状態を生成する処理（粗さ変更時・画像読み込み時のみ実行）
+    // ズーム/パンの位置がキャンバスの範囲外にはみ出さないように制限する
+    function clampPan() {
+      const displaySize = VIEWPORT_SIZE * zoomScale;
+      const minPan = Math.min(0, VIEWPORT_SIZE - displaySize);
+      panX = Math.min(0, Math.max(minPan, panX));
+      panY = Math.min(0, Math.max(minPan, panY));
+    }
+
+    function applyCanvasTransform() {
+      previewCanvas.style.transform = `translate(${panX}px, ${panY}px) scale(${zoomScale})`;
+    }
+
+    // トラックパッドのピンチ操作(ctrlKey付きwheel)で拡大縮小、2本指スクロールでパンする
+    canvasViewport.addEventListener('wheel', (e) => {
+      if (!dotState) return;
+      e.preventDefault();
+
+      if (e.ctrlKey) {
+        const rect = canvasViewport.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+
+        // カーソル位置の下にある画像座標を、拡大後も同じ画面位置に留める
+        const canvasX = (mouseX - panX) / zoomScale;
+        const canvasY = (mouseY - panY) / zoomScale;
+
+        const zoomFactor = Math.exp(-e.deltaY * 0.01);
+        const newScale = Math.min(Math.max(zoomScale * zoomFactor, MIN_ZOOM), MAX_ZOOM);
+
+        panX = mouseX - canvasX * newScale;
+        panY = mouseY - canvasY * newScale;
+        zoomScale = newScale;
+      } else {
+        panX -= e.deltaX;
+        panY -= e.deltaY;
+      }
+
+      clampPan();
+      applyCanvasTransform();
+    }, { passive: false });
+
+    // 画像からドット状態を生成する処理（画像読み込み時のみ実行。既存の手動編集はここでリセットされる）
     function processImage() {
       const blockSize = parseInt(blockSizeInput.value, 10);
-      currentCellSize = blockSize;
 
       // 1. ソースをクリア
       sourceCtx.clearRect(0, 0, 128, 128);
@@ -452,6 +544,35 @@
       render();
     }
 
+    // 現在のドット状態（手動編集済み）に対してモザイク（レトロフィルター）を再適用する
+    // 元画像には戻さず、blockSize x blockSizeのブロックごとに多数決でON/OFFをまとめ直す
+    function reapplyRetroFilter(blockSize) {
+      pushUndoSnapshot();
+
+      const newState = [];
+      for (let y = 0; y < 128; y++) newState.push(new Array(128).fill(0));
+
+      for (let by = 0; by < 128; by += blockSize) {
+        for (let bx = 0; bx < 128; bx += blockSize) {
+          let onCount = 0;
+          for (let dy = 0; dy < blockSize; dy++) {
+            for (let dx = 0; dx < blockSize; dx++) {
+              if (dotState[by + dy][bx + dx]) onCount++;
+            }
+          }
+          const value = (onCount * 2 >= blockSize * blockSize) ? 1 : 0;
+          for (let dy = 0; dy < blockSize; dy++) {
+            for (let dx = 0; dx < blockSize; dx++) {
+              newState[by + dy][bx + dx] = value;
+            }
+          }
+        }
+      }
+
+      dotState = newState;
+      render();
+    }
+
     // 現在のドット状態からプレビューとC++コードを描画する
     function render() {
       // プレビュー用の黒背景クリア
@@ -495,6 +616,53 @@
       // ----------------------------------------
     }
 
+    // dotStateからプレビューキャンバスのみを再描画する（コード欄の内容は書き換えない）
+    function drawPreview() {
+      previewCtx.fillStyle = '#000000';
+      previewCtx.fillRect(0, 0, 128, 128);
+      previewCtx.fillStyle = '#FFFFFF';
+      for (let y = 0; y < 128; y++) {
+        for (let x = 0; x < 128; x++) {
+          if (dotState[y][x]) previewCtx.fillRect(x, y, 1, 1);
+        }
+      }
+      if (showGridInput.checked) {
+        drawDotGrid(currentCellSize);
+      }
+    }
+
+    // C++配列コードの文字列を解析して128x128のドット状態に変換する（形式が不正ならnull）
+    function parseCodeToDotState(code) {
+      const matches = code.match(/0x[0-9a-fA-F]{1,2}/g);
+      if (!matches || matches.length !== 128 * 16) return null;
+
+      const bytes = matches.map(hex => parseInt(hex, 16));
+      const newState = [];
+      let idx = 0;
+      for (let y = 0; y < 128; y++) {
+        const row = [];
+        for (let x = 0; x < 128; x += 8) {
+          const byte = bytes[idx++];
+          for (let b = 0; b < 8; b++) {
+            row.push((byte >> (7 - b)) & 1);
+          }
+        }
+        newState.push(row);
+      }
+      return newState;
+    }
+
+    // コード欄が手動編集されたらドット状態とプレビューに反映する
+    output.addEventListener('input', () => {
+      if (!dotState) return;
+      const parsed = parseCodeToDotState(output.value);
+      if (!parsed) return;
+
+      pushUndoSnapshot();
+      dotState = parsed;
+      drawPreview();
+    });
+
     // ドット（セル）の境界に沿ったグリッド線を描画する
     function drawDotGrid(cellSize) {
       previewCtx.save();
@@ -522,6 +690,31 @@
       const originalText = copyBtn.textContent;
       copyBtn.textContent = 'コピー完了！';
       setTimeout(() => copyBtn.textContent = originalText, 2000);
+    });
+
+    // PNGエクスポート機能（グリッド線は含めず、ドット状態のみを描画する）
+    exportPngBtn.addEventListener('click', () => {
+      if (!dotState) return;
+
+      const exportCanvas = document.createElement('canvas');
+      exportCanvas.width = 128;
+      exportCanvas.height = 128;
+      const exportCtx = exportCanvas.getContext('2d');
+
+      exportCtx.fillStyle = '#000000';
+      exportCtx.fillRect(0, 0, 128, 128);
+      exportCtx.fillStyle = '#FFFFFF';
+      for (let y = 0; y < 128; y++) {
+        for (let x = 0; x < 128; x++) {
+          if (dotState[y][x]) exportCtx.fillRect(x, y, 1, 1);
+        }
+      }
+
+      const arrayName = arrayNameInput.value.trim() || 'FULL_FACE_IMG';
+      const link = document.createElement('a');
+      link.download = `${arrayName}.png`;
+      link.href = exportCanvas.toDataURL('image/png');
+      link.click();
     });
   </script>
 </body>
