@@ -68,6 +68,10 @@
       border: 1px solid #333;
     }
 
+    #previewCanvas {
+      cursor: pointer;
+    }
+
     /* --- Right Sidebar (Controls) --- */
     .sidebar {
       width: 320px;
@@ -145,6 +149,23 @@
     .input-group input[type="text"]:focus,
     .input-group select:focus {
       border-color: var(--accent);
+    }
+
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .checkbox-row label {
+      font-size: 12px;
+      color: var(--text-sub);
+      cursor: pointer;
+      margin-bottom: 0;
+    }
+
+    .checkbox-row input[type="checkbox"] {
+      cursor: pointer;
     }
 
     /* Output Area */
@@ -236,6 +257,15 @@
         </select>
       </div>
 
+      <!-- ドットグリッド表示切り替え -->
+      <div class="input-group">
+        <div class="checkbox-row">
+          <input type="checkbox" id="showGrid">
+          <label for="showGrid">ドットグリッドを表示</label>
+        </div>
+        <span class="hint-text">プレビューをクリックするとドットのON/OFFを反転できます</span>
+      </div>
+
       <div class="input-group">
         <label for="arrayName">配列名 (Array Name)</label>
         <input type="text" id="arrayName" value="FRAME_IDLE_A" placeholder="例: FRAME_IDLE_A">
@@ -258,8 +288,66 @@
     const copyBtn = document.getElementById('copyBtn');
     const arrayNameInput = document.getElementById('arrayName');
     const blockSizeInput = document.getElementById('blockSize');
+    const showGridInput = document.getElementById('showGrid');
 
     let currentImg = null;
+    let dotState = null; // 128x128 のドットON/OFF状態（手動編集を保持する）
+    let currentCellSize = parseInt(blockSizeInput.value, 10); // グリッド/クリック判定用のセルサイズ
+
+    // --- クリック編集のUndo/Redo履歴 ---
+    let undoStack = [];
+    let redoStack = [];
+    const MAX_HISTORY = 50;
+
+    function cloneDotState(state) {
+      return state.map(row => row.slice());
+    }
+
+    // 編集前の状態を履歴に積む（新しい編集でRedo履歴は破棄）
+    function pushUndoSnapshot() {
+      undoStack.push(cloneDotState(dotState));
+      if (undoStack.length > MAX_HISTORY) undoStack.shift();
+      redoStack.length = 0;
+    }
+
+    // 画像の再読み込みや粗さ変更でドット配列自体が作り直されたら履歴をリセット
+    function resetHistory() {
+      undoStack = [];
+      redoStack = [];
+    }
+
+    function undo() {
+      if (!dotState || undoStack.length === 0) return;
+      redoStack.push(cloneDotState(dotState));
+      dotState = undoStack.pop();
+      render();
+    }
+
+    function redo() {
+      if (!dotState || redoStack.length === 0) return;
+      undoStack.push(cloneDotState(dotState));
+      dotState = redoStack.pop();
+      render();
+    }
+
+    // Command+Z / Command+Shift+Z（Win/LinuxはCtrl）でUndo/Redo
+    document.addEventListener('keydown', (e) => {
+      if (e.key.toLowerCase() !== 'z') return;
+      const isUndoRedoCombo = e.metaKey || e.ctrlKey;
+      if (!isUndoRedoCombo) return;
+
+      // テキスト入力欄にフォーカスがある場合はブラウザ標準のUndo/Redoに任せる
+      const target = e.target;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
+
+      e.preventDefault();
+      if (e.shiftKey) {
+        redo();
+      } else {
+        undo();
+      }
+    });
+    // ------------------------------------
 
     // ファイル読み込み処理
     fileInput.addEventListener('change', (e) => {
@@ -274,13 +362,46 @@
       img.src = URL.createObjectURL(file);
     });
 
-    // 配列名や粗さが変更されたらリアルタイムに再生成する
-    arrayNameInput.addEventListener('input', () => { if (currentImg) processImage(); });
+    // 配列名が変更されたら再描画（ドット状態はそのまま）
+    arrayNameInput.addEventListener('input', () => { if (dotState) render(); });
+
+    // 粗さが変更されたら画像から再生成（手動編集は破棄される）
     blockSizeInput.addEventListener('change', () => { if (currentImg) processImage(); });
 
-    // メインの変換処理
+    // グリッド表示切り替え時は再描画のみ
+    showGridInput.addEventListener('change', () => { if (dotState) render(); });
+
+    // プレビューをクリックしてドットのON/OFFを反転する
+    previewCanvas.addEventListener('click', (e) => {
+      if (!dotState) return;
+
+      const rect = previewCanvas.getBoundingClientRect();
+      const scaleX = previewCanvas.width / rect.width;
+      const scaleY = previewCanvas.height / rect.height;
+      const px = Math.floor((e.clientX - rect.left) * scaleX);
+      const py = Math.floor((e.clientY - rect.top) * scaleY);
+      if (px < 0 || px >= 128 || py < 0 || py >= 128) return;
+
+      // クリック位置が属するグリッドセル全体をまとめて反転する
+      const cellSize = currentCellSize;
+      const cellX = Math.floor(px / cellSize) * cellSize;
+      const cellY = Math.floor(py / cellSize) * cellSize;
+
+      pushUndoSnapshot();
+      const newValue = dotState[cellY][cellX] ? 0 : 1;
+      for (let dy = 0; dy < cellSize; dy++) {
+        for (let dx = 0; dx < cellSize; dx++) {
+          dotState[cellY + dy][cellX + dx] = newValue;
+        }
+      }
+
+      render();
+    });
+
+    // 画像からドット状態を生成する処理（粗さ変更時・画像読み込み時のみ実行）
     function processImage() {
       const blockSize = parseInt(blockSizeInput.value, 10);
+      currentCellSize = blockSize;
 
       // 1. ソースをクリア
       sourceCtx.clearRect(0, 0, 128, 128);
@@ -309,6 +430,30 @@
       const imgData = sourceCtx.getImageData(0, 0, 128, 128);
       const data = imgData.data;
 
+      // 2. ピクセルごとにON/OFFを判定してドット状態を構築
+      dotState = [];
+      for (let y = 0; y < 128; y++) {
+        const row = [];
+        for (let x = 0; x < 128; x++) {
+          const i = ((y * 128) + x) * 4;
+          const r = data[i];
+          const g = data[i + 1];
+          const color_b = data[i + 2];
+          const a = data[i + 3];
+
+          // グレースケール化してしきい値判定
+          const brightness = (r + g + color_b) / 3;
+          row.push((a > 127 && brightness > threshold) ? 1 : 0);
+        }
+        dotState.push(row);
+      }
+
+      resetHistory();
+      render();
+    }
+
+    // 現在のドット状態からプレビューとC++コードを描画する
+    function render() {
       // プレビュー用の黒背景クリア
       previewCtx.fillStyle = '#000000';
       previewCtx.fillRect(0, 0, 128, 128);
@@ -319,28 +464,20 @@
       let cppCode = `// 128x128 Face Data (1-bit)\n`;
       cppCode += `const uint8_t ${arrayName}[2048] = {\n`;
 
-      // 2. ピクセル操作 & C++コード生成
       for (let y = 0; y < 128; y++) {
         let rowBits = [];
         for (let x = 0; x < 128; x += 8) {
           let byte = 0;
           for (let b = 0; b < 8; b++) {
-            const i = ((y * 128) + (x + b)) * 4;
-            const r = data[i];
-            const g = data[i + 1];
-            const color_b = data[i + 2];
-            const a = data[i + 3];
-
-            // グレースケール化してしきい値判定
-            const brightness = (r + g + color_b) / 3;
-            const isDotOn = (a > 127 && brightness > threshold) ? 1 : 0;
+            const px = x + b;
+            const isDotOn = dotState[y][px];
 
             byte |= (isDotOn << (7 - b));
 
             // プレビューキャンバスへの描画 (ONなら白を打つ)
             if (isDotOn) {
               previewCtx.fillStyle = '#FFFFFF';
-              previewCtx.fillRect(x + b, y, 1, 1);
+              previewCtx.fillRect(px, y, 1, 1);
             }
           }
           rowBits.push(`0x${byte.toString(16).padStart(2, '0')}`);
@@ -350,6 +487,32 @@
       cppCode += `};\n`;
 
       output.value = cppCode;
+
+      // --- ドットグリッドのオーバーレイ描画 ---
+      if (showGridInput.checked) {
+        drawDotGrid(currentCellSize);
+      }
+      // ----------------------------------------
+    }
+
+    // ドット（セル）の境界に沿ったグリッド線を描画する
+    function drawDotGrid(cellSize) {
+      previewCtx.save();
+      previewCtx.strokeStyle = 'rgba(255, 0, 0, 0.35)';
+      previewCtx.lineWidth = 1;
+      for (let pos = 0; pos <= 128; pos += cellSize) {
+        // 縦線
+        previewCtx.beginPath();
+        previewCtx.moveTo(pos + 0.5, 0);
+        previewCtx.lineTo(pos + 0.5, 128);
+        previewCtx.stroke();
+        // 横線
+        previewCtx.beginPath();
+        previewCtx.moveTo(0, pos + 0.5);
+        previewCtx.lineTo(128, pos + 0.5);
+        previewCtx.stroke();
+      }
+      previewCtx.restore();
     }
 
     // コピー機能
